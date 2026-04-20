@@ -4,10 +4,11 @@ A robust, full-stack machine learning pipeline that goes beyond standard classif
 
 ## 🌟 Key Features
 
-1. **Lightweight Edge Architecture**: Uses MobileNetV3-Small (only 2.5M parameters), enabling extremely fast, real-time inference strictly on a CPU without requiring cloud GPUs. You can run this natively on a Raspberry Pi or standard laptop.
+1. **Dual-Model Edge Architecture**: Uses both **MobileNetV3-Small** (2.5M parameters) and **EfficientNet-Lite0**, enabling extremely fast, real-time inference strictly on a CPU without requiring cloud GPUs. You can run this natively on a Raspberry Pi or standard laptop.
 2. **True Explainable AI (XAI)**: Unlike traditional implementations that just display a Grad-CAM heatmap, PlantXAI features an **Intelligent Explanation Engine**. It mathematically analyzes the heatmap's spatial focus, spread, and intensity, cross-referencing it with botanical rules to generate a human-readable explanation of *why* it made its diagnosis.
 3. **Mobile-First Full-Stack App**: Comes with a built-in Flask server featuring a stunning dark "glassmorphism" user interface.
     - Three Input Modes: **Live Camera**, **Take Photo**, and **File Upload**.
+    - **Side-by-Side Model Comparison**: Compare inferences and Grad-CAM heatmaps from both MobileNetV3 and EfficientNet-Lite0 simultaneously.
     - Auto-Analyze: The inference engine triggers instantly upon image selection.
 4. **Scan History & Persistence**: Integrated SQLite database to track historical scans, calculate crop health ratios, and monitor disease trends over time.
 
@@ -36,7 +37,7 @@ python server.py
 If you wish to retrain the underlying model or test the Python scripts independently of the web app, simply upload the `train.py` and `test.py` files to Google Colab. The codebase is fully modular.
 
 ### `train.py`
-Downloads the massive PlantVillage dataset (54,000+ images) via KaggleHub, handles bounding/normalization, executes the training loop, evaluates metrics (Accuracy, Precision, Recall, F1), generates a Seaborn Confusion Matrix, and saves the `mobilenet_v3.pth` weights file.
+Downloads the massive PlantVillage dataset (54,000+ images) via KaggleHub, handles bounding/normalization, executes the training loop, evaluates metrics (Accuracy, Precision, Recall, F1), generates a Seaborn Confusion Matrix, and saves the trained `.pth` weights files.
 
 ### `test.py`
 A lightweight testing script intended to be used in Colab alongside `train.py`. It explicitly loads the saved model weights and outputs the custom intelligent Grad-CAM explanations directly in the console.
