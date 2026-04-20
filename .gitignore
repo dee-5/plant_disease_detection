@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Machine Learning Weight Files
+*.pth
+*.pt
+*.onnx
+*.tflite
+*.h5
+
+# Datasets and cache
+data/
+PlantVillage/
+.cache/
+
+# Execution outputs
+confusion_matrix.png
+class_names.json
+
+# Local App Data & Tests
+*.db
+*.jpg
+*.jpeg
+*.png
+static/uploads/*
+static/gradcam/*
+!static/uploads/.gitkeep
+!static/gradcam/.gitkeep
