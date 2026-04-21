@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PlantXAI — Scan History</title>
+    <meta name="description" content="View your plant disease detection scan history and health statistics.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0a0f1a;
+            --bg-secondary: #111827;
+            --bg-card: rgba(17, 24, 39, 0.7);
+            --bg-glass: rgba(255, 255, 255, 0.04);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --text-primary: #f0f4f8;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-green: #22c55e;
+            --accent-green-glow: rgba(34, 197, 94, 0.25);
+            --accent-red: #ef4444;
+            --accent-red-glow: rgba(239, 68, 68, 0.25);
+            --accent-amber: #f59e0b;
+            --accent-blue: #3b82f6;
+            --accent-purple: #a855f7;
+            --gradient-main: linear-gradient(135deg, #22c55e 0%, #3b82f6 50%, #a855f7 100%);
+            --radius: 16px;
+            --radius-sm: 10px;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(ellipse at 20% 50%, rgba(34,197,94,0.06) 0%, transparent 50%),
+                        radial-gradient(ellipse at 80% 20%, rgba(59,130,246,0.05) 0%, transparent 50%),
+                        radial-gradient(ellipse at 50% 80%, rgba(168,85,247,0.04) 0%, transparent 50%);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .app-container {
+            position: relative;
+            z-index: 1;
+            max-width: 480px;
+            margin: 0 auto;
+            padding: 16px;
+            padding-bottom: 100px;
+        }
+
+        .header {
+            text-align: center;
+            padding: 24px 0 20px;
+        }
+        .header h1 {
+            font-size: 24px;
+            font-weight: 800;
+            background: var(--gradient-main);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+
+        .card {
+            background: var(--bg-glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        .stat-box {
+            background: rgba(0,0,0,0.25);
+            border-radius: var(--radius-sm);
+            padding: 16px 14px;
+            text-align: center;
+            border: 1px solid var(--border-glass);
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            background: var(--gradient-main);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+        .stat-box.healthy .stat-value { background: linear-gradient(135deg, #22c55e, #4ade80); -webkit-background-clip: text; }
+        .stat-box.diseased .stat-value { background: linear-gradient(135deg, #ef4444, #f87171); -webkit-background-clip: text; }
+
+        /* Health Ratio Bar */
+        .health-bar-container {
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(0,0,0,0.2);
+            border-radius: var(--radius-sm);
+        }
+        .health-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+        .health-bar {
+            height: 10px;
+            background: rgba(239,68,68,0.3);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .health-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #22c55e, #4ade80);
+            border-radius: 5px;
+            transition: width 1s ease;
+        }
+
+        /* Scan List */
+        .scan-item {
+            display: flex;
+            gap: 14px;
+            padding: 14px 0;
+            border-bottom: 1px solid var(--border-glass);
+            align-items: center;
+        }
+        .scan-item:last-child { border-bottom: none; }
+
+        .scan-thumb {
+            width: 56px;
+            height: 56px;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            flex-shrink: 0;
+            border: 1px solid var(--border-glass);
+        }
+        .scan-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .scan-info { flex: 1; min-width: 0; }
+        .scan-class {
+            font-size: 14px;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .scan-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 3px;
+        }
+
+        .scan-conf {
+            font-size: 16px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+        .scan-conf.healthy { color: var(--accent-green); }
+        .scan-conf.diseased { color: var(--accent-red); }
+
+        .scan-delete-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 4px;
+            transition: color 0.2s;
+            flex-shrink: 0;
+        }
+        .scan-delete-btn:hover { color: var(--accent-red); }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+        .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+        .empty-state p { font-size: 14px; }
+
+        /* Nav Bar */
+        .nav-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            height: 70px;
+            background: rgba(10, 15, 26, 0.92);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 48px;
+            z-index: 100;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+            text-decoration: none;
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 600;
+            transition: color 0.2s;
+        }
+        .nav-item.active { color: var(--accent-green); }
+        .nav-item .nav-icon { font-size: 22px; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .scan-item { animation: fadeIn 0.4s ease forwards; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>📊 Scan History</h1>
+            <p>Your plant health monitoring log</p>
+        </header>
+
+        <!-- Stats -->
+        <div class="card">
+            <div class="card-title">📈 Overview</div>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-value">{{ stats.total_scans }}</div>
+                    <div class="stat-label">Total Scans</div>
+                </div>
+                <div class="stat-box healthy">
+                    <div class="stat-value">{{ stats.healthy_count }}</div>
+                    <div class="stat-label">Healthy</div>
+                </div>
+                <div class="stat-box diseased">
+                    <div class="stat-value">{{ stats.diseased_count }}</div>
+                    <div class="stat-label">Diseased</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{{ stats.health_ratio }}%</div>
+                    <div class="stat-label">Health Rate</div>
+                </div>
+            </div>
+            <div class="health-bar-container">
+                <div class="health-bar-label">
+                    <span>🌱 Healthy</span>
+                    <span>🦠 Diseased</span>
+                </div>
+                <div class="health-bar">
+                    <div class="health-bar-fill" style="width: {{ stats.health_ratio }}%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Most Common -->
+        {% if stats.most_common != 'N/A' %}
+        <div class="card">
+            <div class="card-title">🔎 Most Detected</div>
+            <div style="font-size:16px; font-weight:700;">{{ stats.most_common }}</div>
+        </div>
+        {% endif %}
+
+        <!-- Scan List -->
+        <div class="card">
+            <div class="card-title">🕐 Recent Scans</div>
+            {% if scans %}
+                {% for scan in scans %}
+                <div class="scan-item" id="scan-{{ scan.id }}" style="animation-delay: {{ loop.index0 * 0.05 }}s">
+                    <div class="scan-thumb">
+                        <img src="/static/uploads/{{ scan.image_filename }}" alt="Scan" loading="lazy">
+                    </div>
+                    <div class="scan-info">
+                        <div class="scan-class">{{ scan.predicted_class }}</div>
+                        <div class="scan-meta">{{ scan.timestamp }} · {{ scan.model_name }}</div>
+                    </div>
+                    <div class="scan-conf {{ 'healthy' if scan.is_healthy else 'diseased' }}">
+                        {{ (scan.confidence * 100) | round(1) }}%
+                    </div>
+                    <button class="scan-delete-btn" onclick="deleteScan({{ scan.id }})" title="Delete">🗑️</button>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <div class="icon">🔬</div>
+                    <p>No scans yet. Go scan a leaf!</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="nav-bar">
+        <a href="/" class="nav-item">
+            <span class="nav-icon">🔬</span> Scan
+        </a>
+        <a href="/history" class="nav-item active">
+            <span class="nav-icon">📊</span> History
+        </a>
+    </nav>
+
+    <script>
+        async function deleteScan(id) {
+            if (!confirm('Delete this scan?')) return;
+            try {
+                await fetch(`/api/scan/${id}`, { method: 'DELETE' });
+                const el = document.getElementById('scan-' + id);
+                if (el) {
+                    el.style.opacity = '0';
+                    el.style.transform = 'translateX(100px)';
+                    el.style.transition = 'all 0.3s ease';
+                    setTimeout(() => el.remove(), 300);
+                }
+            } catch (err) {
+                alert('Failed to delete scan');
+            }
+        }
+    </script>
+</body>
+</html>

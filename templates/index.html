@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PlantXAI — Plant Disease Detection</title>
+    <meta name="description" content="AI-powered plant disease detection with explainable Grad-CAM heatmaps. Scan a leaf to diagnose diseases instantly.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0a0f1a;
+            --bg-secondary: #111827;
+            --bg-card: rgba(17, 24, 39, 0.7);
+            --bg-glass: rgba(255, 255, 255, 0.04);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --text-primary: #f0f4f8;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-green: #22c55e;
+            --accent-green-glow: rgba(34, 197, 94, 0.25);
+            --accent-red: #ef4444;
+            --accent-red-glow: rgba(239, 68, 68, 0.25);
+            --accent-amber: #f59e0b;
+            --accent-blue: #3b82f6;
+            --accent-purple: #a855f7;
+            --gradient-main: linear-gradient(135deg, #22c55e 0%, #3b82f6 50%, #a855f7 100%);
+            --radius: 16px;
+            --radius-sm: 10px;
+            --shadow-glow: 0 0 40px rgba(34, 197, 94, 0.08);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Ambient background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at 20% 50%, rgba(34, 197, 94, 0.06) 0%, transparent 50%),
+                        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.05) 0%, transparent 50%),
+                        radial-gradient(ellipse at 50% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .app-container {
+            position: relative;
+            z-index: 1;
+            max-width: 480px;
+            margin: 0 auto;
+            padding: 16px;
+            padding-bottom: 100px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 24px 0 20px;
+        }
+        .header-logo {
+            font-size: 40px;
+            margin-bottom: 6px;
+        }
+        .header h1 {
+            font-size: 26px;
+            font-weight: 800;
+            background: var(--gradient-main);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.5px;
+        }
+        .header p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-top: 4px;
+            font-weight: 400;
+        }
+
+        /* Glass Card */
+        .card {
+            background: var(--bg-glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 16px;
+            transition: all 0.3s ease;
+        }
+        .card:hover { border-color: rgba(255,255,255,0.12); }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+
+        /* Input Mode Tabs */
+        .input-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 16px;
+            background: rgba(0,0,0,0.3);
+            border-radius: var(--radius-sm);
+            padding: 4px;
+        }
+        .input-tab {
+            flex: 1;
+            padding: 10px 6px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        .input-tab .tab-icon { font-size: 18px; }
+        .input-tab.active {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--accent-green);
+            box-shadow: 0 0 12px rgba(34, 197, 94, 0.1);
+        }
+        .input-tab:hover:not(.active) { color: var(--text-secondary); }
+
+        /* Camera / Upload Area */
+        .capture-area {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4/3;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            background: rgba(0,0,0,0.4);
+            border: 2px dashed rgba(255,255,255,0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+        .capture-area:hover { border-color: rgba(34, 197, 94, 0.4); }
+        .capture-area.has-image { border: 2px solid rgba(34, 197, 94, 0.3); }
+
+        .capture-area video,
+        .capture-area img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .capture-placeholder {
+            text-align: center;
+            color: var(--text-muted);
+        }
+        .capture-placeholder .icon { font-size: 42px; margin-bottom: 8px; }
+        .capture-placeholder p { font-size: 13px; }
+
+        #fileInput { display: none; }
+
+        /* Capture Button */
+        .capture-btn {
+            display: none;
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            border: 4px solid rgba(255,255,255,0.8);
+            background: var(--accent-green);
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            cursor: pointer;
+            box-shadow: 0 0 24px rgba(34, 197, 94, 0.4);
+            transition: transform 0.15s;
+            z-index: 5;
+        }
+        .capture-btn:active { transform: translateX(-50%) scale(0.9); }
+        .capture-btn.visible { display: block; }
+
+        /* Model Selector */
+        .model-selector {
+            display: flex;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        .model-btn {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid var(--border-glass);
+            background: rgba(0,0,0,0.2);
+            color: var(--text-secondary);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.25s;
+            text-align: center;
+        }
+        .model-btn.active {
+            background: rgba(59, 130, 246, 0.15);
+            border-color: rgba(59, 130, 246, 0.4);
+            color: var(--accent-blue);
+        }
+        .model-btn.compare-btn.active {
+            background: rgba(168, 85, 247, 0.15);
+            border-color: rgba(168, 85, 247, 0.4);
+            color: var(--accent-purple);
+        }
+
+        /* Analyze Button */
+        .analyze-btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: var(--gradient-main);
+            color: white;
+            font-family: inherit;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 14px;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+            letter-spacing: 0.3px;
+        }
+        .analyze-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(34,197,94,0.3); }
+        .analyze-btn:active { transform: translateY(0); }
+        .analyze-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .analyze-btn .spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto;
+        }
+        .analyze-btn.loading .btn-text { display: none; }
+        .analyze-btn.loading .spinner { display: block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Results Section */
+        .results-section { display: none; }
+        .results-section.visible { display: block; animation: fadeUp 0.5s ease; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Diagnosis Badge */
+        .diagnosis-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 16px;
+        }
+        .diagnosis-icon {
+            width: 52px;
+            height: 52px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            flex-shrink: 0;
+        }
+        .diagnosis-icon.healthy {
+            background: rgba(34, 197, 94, 0.15);
+            box-shadow: 0 0 20px var(--accent-green-glow);
+        }
+        .diagnosis-icon.diseased {
+            background: rgba(239, 68, 68, 0.15);
+            box-shadow: 0 0 20px var(--accent-red-glow);
+        }
+        .diagnosis-name {
+            font-size: 18px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .diagnosis-model {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 500;
+            margin-top: 2px;
+        }
+
+        /* Confidence Bar */
+        .confidence-section { margin-bottom: 16px; }
+        .confidence-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+        .confidence-bar {
+            height: 8px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .confidence-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 1s ease;
+            background: var(--gradient-main);
+        }
+
+        /* Top 3 */
+        .top3-list { list-style: none; }
+        .top3-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-glass);
+            font-size: 13px;
+        }
+        .top3-item:last-child { border-bottom: none; }
+        .top3-rank {
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.06);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .top3-name { flex: 1; font-weight: 500; }
+        .top3-conf { color: var(--accent-green); font-weight: 700; }
+
+        /* GradCAM Images */
+        .gradcam-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .gradcam-box {
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            border: 1px solid var(--border-glass);
+        }
+        .gradcam-box img {
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: cover;
+            display: block;
+        }
+        .gradcam-label {
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+            padding: 6px;
+            font-weight: 600;
+            background: rgba(0,0,0,0.3);
+        }
+
+        /* Explanation */
+        .explanation-block {
+            background: rgba(0,0,0,0.2);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            margin-bottom: 10px;
+        }
+        .explanation-block h4 {
+            font-size: 12px;
+            color: var(--accent-blue);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 6px;
+        }
+        .explanation-block p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Severity Badge */
+        .severity-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .severity-badge.healthy { background: rgba(34,197,94,0.15); color: var(--accent-green); }
+        .severity-badge.low     { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+        .severity-badge.medium  { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+        .severity-badge.high    { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+
+        /* Comparison Results */
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .comparison-card {
+            background: rgba(0,0,0,0.2);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            border: 1px solid var(--border-glass);
+        }
+        .comparison-card h4 {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--accent-blue);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .comparison-card .comp-class {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .comparison-card .comp-conf {
+            font-size: 22px;
+            font-weight: 800;
+            background: var(--gradient-main);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .comparison-card img {
+            width: 100%;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        /* Nav Bar */
+        .nav-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 70px;
+            background: rgba(10, 15, 26, 0.92);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 48px;
+            z-index: 100;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+            text-decoration: none;
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 600;
+            transition: color 0.2s;
+        }
+        .nav-item.active { color: var(--accent-green); }
+        .nav-item .nav-icon { font-size: 22px; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: rgba(239, 68, 68, 0.9);
+            backdrop-filter: blur(10px);
+            color: white;
+            padding: 12px 24px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 600;
+            z-index: 200;
+            transition: transform 0.3s ease;
+        }
+        .toast.visible { transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-logo">🌿</div>
+            <h1>PlantXAI</h1>
+            <p>Edge-AI Plant Disease Detection</p>
+        </header>
+
+        <!-- Input Card -->
+        <div class="card" id="inputCard">
+            <div class="card-title">📷 Capture</div>
+
+            <!-- Tabs -->
+            <div class="input-tabs">
+                <button class="input-tab active" data-mode="camera" id="tabCamera">
+                    <span class="tab-icon">📹</span> Live
+                </button>
+                <button class="input-tab" data-mode="photo" id="tabPhoto">
+                    <span class="tab-icon">📸</span> Photo
+                </button>
+                <button class="input-tab" data-mode="upload" id="tabUpload">
+                    <span class="tab-icon">📁</span> Upload
+                </button>
+            </div>
+
+            <!-- Capture Area -->
+            <div class="capture-area" id="captureArea">
+                <video id="videoFeed" autoplay playsinline style="display:none;"></video>
+                <img id="previewImg" style="display:none;" alt="Preview">
+                <canvas id="captureCanvas" style="display:none;"></canvas>
+                <div class="capture-placeholder" id="placeholder">
+                    <div class="icon">📷</div>
+                    <p>Tap to start camera</p>
+                </div>
+                <button class="capture-btn" id="captureBtn"></button>
+            </div>
+            <input type="file" id="fileInput" accept="image/*" capture="environment">
+
+            <!-- Model Selection -->
+            <div class="model-selector">
+                {% for model_key in available_models %}
+                <button class="model-btn {% if loop.first %}active{% endif %}" data-model="{{ model_key }}" id="modelBtn_{{ model_key }}">
+                    🧠 {{ model_key | replace('_', ' ') | title }}
+                </button>
+                {% endfor %}
+                {% if available_models | length > 1 %}
+                <button class="model-btn compare-btn" data-model="compare" id="modelBtn_compare">
+                    ⚔️ Compare
+                </button>
+                {% endif %}
+            </div>
+
+            <!-- Analyze -->
+            <button class="analyze-btn" id="analyzeBtn" disabled>
+                <span class="btn-text">🔍 Analyze Leaf</span>
+                <div class="spinner"></div>
+            </button>
+        </div>
+
+        <!-- Results -->
+        <div class="results-section" id="resultsSection">
+            <!-- Single model result -->
+            <div class="card" id="singleResult" style="display:none;">
+                <div class="diagnosis-header">
+                    <div class="diagnosis-icon" id="diagIcon">🌱</div>
+                    <div>
+                        <div class="diagnosis-name" id="diagName">—</div>
+                        <div class="diagnosis-model" id="diagModel">—</div>
+                    </div>
+                </div>
+
+                <div class="confidence-section">
+                    <div class="confidence-label">
+                        <span>Confidence</span>
+                        <span id="confValue">0%</span>
+                    </div>
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" id="confFill" style="width:0%"></div>
+                    </div>
+                </div>
+
+                <div id="severityContainer" style="margin-bottom:14px;"></div>
+
+                <div class="gradcam-container">
+                    <div class="gradcam-box">
+                        <img id="origImg" alt="Original">
+                        <div class="gradcam-label">Original</div>
+                    </div>
+                    <div class="gradcam-box">
+                        <img id="gradcamImg" alt="Grad-CAM">
+                        <div class="gradcam-label">Grad-CAM Heatmap</div>
+                    </div>
+                </div>
+
+                <ul class="top3-list" id="top3List"></ul>
+            </div>
+
+            <!-- Explanation -->
+            <div class="card" id="explanationCard" style="display:none;">
+                <div class="card-title">🧠 AI Explanation</div>
+                <div id="explanationContent"></div>
+            </div>
+
+            <!-- Comparison result -->
+            <div class="card" id="comparisonResult" style="display:none;">
+                <div class="card-title">⚔️ Model Comparison</div>
+                <div class="comparison-grid" id="comparisonGrid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Nav -->
+    <nav class="nav-bar">
+        <a href="/" class="nav-item active">
+            <span class="nav-icon">🔬</span> Scan
+        </a>
+        <a href="/history" class="nav-item">
+            <span class="nav-icon">📊</span> History
+        </a>
+    </nav>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ── State ──
+        let currentMode = 'camera';
+        let selectedModel = '{{ available_models[0] if available_models else "mobilenet" }}';
+        let isCompareMode = false;
+        let currentStream = null;
+        let capturedImageBlob = null;
+
+        const video = document.getElementById('videoFeed');
+        const preview = document.getElementById('previewImg');
+        const canvas = document.getElementById('captureCanvas');
+        const placeholder = document.getElementById('placeholder');
+        const captureBtn = document.getElementById('captureBtn');
+        const captureArea = document.getElementById('captureArea');
+        const fileInput = document.getElementById('fileInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+
+        // ── Tabs ──
+        document.querySelectorAll('.input-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.input-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentMode = tab.dataset.mode;
+                resetCapture();
+                if (currentMode === 'camera') {
+                    placeholder.innerHTML = '<div class="icon">📹</div><p>Tap to start live camera</p>';
+                    captureArea.onclick = startCamera;
+                } else if (currentMode === 'photo') {
+                    placeholder.innerHTML = '<div class="icon">📸</div><p>Tap to take a photo</p>';
+                    captureArea.onclick = () => {
+                        fileInput.setAttribute('capture', 'environment');
+                        fileInput.click();
+                    };
+                } else {
+                    placeholder.innerHTML = '<div class="icon">📁</div><p>Tap to choose an image file</p>';
+                    captureArea.onclick = () => {
+                        fileInput.removeAttribute('capture');
+                        fileInput.click();
+                    };
+                }
+            });
+        });
+
+        // ── Model buttons ──
+        document.querySelectorAll('.model-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                if (btn.dataset.model === 'compare') {
+                    isCompareMode = true;
+                } else {
+                    isCompareMode = false;
+                    selectedModel = btn.dataset.model;
+                }
+            });
+        });
+
+        // ── Camera ──
+        async function startCamera() {
+            try {
+                stopCamera();
+                currentStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } }
+                });
+                video.srcObject = currentStream;
+                video.style.display = 'block';
+                placeholder.style.display = 'none';
+                captureBtn.classList.add('visible');
+                captureArea.onclick = null;
+            } catch (err) {
+                showToast('Camera access denied. Try Upload instead.');
+            }
+        }
+
+        function stopCamera() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(t => t.stop());
+                currentStream = null;
+            }
+            video.style.display = 'none';
+            captureBtn.classList.remove('visible');
+        }
+
+        captureBtn.addEventListener('click', () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            canvas.toBlob(blob => {
+                capturedImageBlob = blob;
+                const url = URL.createObjectURL(blob);
+                preview.src = url;
+                preview.style.display = 'block';
+                stopCamera();
+                captureArea.classList.add('has-image');
+                analyzeBtn.disabled = false;
+            }, 'image/jpeg', 0.92);
+        });
+
+        // ── File Input ──
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            capturedImageBlob = file;
+            const url = URL.createObjectURL(file);
+            preview.src = url;
+            preview.style.display = 'block';
+            placeholder.style.display = 'none';
+            captureArea.classList.add('has-image');
+            analyzeBtn.disabled = false;
+        });
+
+        function resetCapture() {
+            stopCamera();
+            preview.style.display = 'none';
+            placeholder.style.display = 'flex';
+            captureArea.classList.remove('has-image');
+            capturedImageBlob = null;
+            analyzeBtn.disabled = true;
+            fileInput.value = '';
+        }
+
+        // ── Analyze ──
+        analyzeBtn.addEventListener('click', async () => {
+            if (!capturedImageBlob) return;
+            analyzeBtn.classList.add('loading');
+            analyzeBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('image', capturedImageBlob, 'leaf.jpg');
+
+                let result;
+                if (isCompareMode) {
+                    const resp = await fetch('/api/compare', { method: 'POST', body: formData });
+                    result = await resp.json();
+                    if (result.error) throw new Error(result.error);
+                    showComparison(result);
+                } else {
+                    const resp = await fetch(`/api/predict?model=${selectedModel}`, { method: 'POST', body: formData });
+                    result = await resp.json();
+                    if (result.error) throw new Error(result.error);
+                    showSingleResult(result);
+                }
+
+                document.getElementById('resultsSection').classList.add('visible');
+                document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+
+            } catch (err) {
+                showToast('Analysis failed: ' + err.message);
+            } finally {
+                analyzeBtn.classList.remove('loading');
+                analyzeBtn.disabled = false;
+            }
+        });
+
+        // ── Show Single Result ──
+        function showSingleResult(r) {
+            document.getElementById('singleResult').style.display = 'block';
+            document.getElementById('explanationCard').style.display = 'block';
+            document.getElementById('comparisonResult').style.display = 'none';
+
+            const icon = document.getElementById('diagIcon');
+            icon.textContent = r.is_healthy ? '✅' : '🦠';
+            icon.className = 'diagnosis-icon ' + (r.is_healthy ? 'healthy' : 'diseased');
+
+            document.getElementById('diagName').textContent = r.display_name || r.predicted_class;
+            document.getElementById('diagModel').textContent = r.model_name;
+            document.getElementById('confValue').textContent = r.confidence + '%';
+
+            const fill = document.getElementById('confFill');
+            fill.style.width = '0%';
+            requestAnimationFrame(() => { fill.style.width = r.confidence + '%'; });
+
+            const sevContainer = document.getElementById('severityContainer');
+            if (r.severity) {
+                const sevClass = r.is_healthy ? 'healthy' : (r.confidence > 85 ? 'high' : r.confidence > 60 ? 'medium' : 'low');
+                sevContainer.innerHTML = `<span class="severity-badge ${sevClass}">${r.severity}</span>`;
+            } else {
+                sevContainer.innerHTML = '';
+            }
+
+            document.getElementById('origImg').src = r.image_url;
+            document.getElementById('gradcamImg').src = r.gradcam_url;
+
+            const list = document.getElementById('top3List');
+            list.innerHTML = '';
+            r.top3.forEach((item, i) => {
+                list.innerHTML += `
+                    <li class="top3-item">
+                        <span class="top3-rank">${i + 1}</span>
+                        <span class="top3-name">${item.class}</span>
+                        <span class="top3-conf">${item.confidence}%</span>
+                    </li>`;
+            });
+
+            // Explanation
+            const expContent = document.getElementById('explanationContent');
+            expContent.innerHTML = '';
+            if (r.explanation) {
+                const sections = [
+                    { title: 'Summary', text: r.explanation.summary },
+                    { title: 'Spatial Analysis', text: r.explanation.spatial_detail },
+                    { title: 'Disease Info', text: r.explanation.disease_detail },
+                    { title: 'Recommendation', text: r.explanation.recommendation },
+                    { title: 'Trust Assessment', text: r.explanation.trust_assessment },
+                ];
+                sections.forEach(s => {
+                    if (s.text) {
+                        expContent.innerHTML += `
+                            <div class="explanation-block">
+                                <h4>${s.title}</h4>
+                                <p>${s.text}</p>
+                            </div>`;
+                    }
+                });
+            }
+        }
+
+        // ── Show Comparison ──
+        function showComparison(data) {
+            document.getElementById('singleResult').style.display = 'none';
+            document.getElementById('explanationCard').style.display = 'none';
+            document.getElementById('comparisonResult').style.display = 'block';
+
+            const grid = document.getElementById('comparisonGrid');
+            grid.innerHTML = '';
+            for (const key of data.models_compared) {
+                const r = data.results[key];
+                grid.innerHTML += `
+                    <div class="comparison-card">
+                        <h4>${r.model_name}</h4>
+                        <div class="comp-class">${r.display_name || r.predicted_class}</div>
+                        <div class="comp-conf">${r.confidence}%</div>
+                        <img src="${r.gradcam_url}" alt="GradCAM">
+                    </div>`;
+            }
+        }
+
+        // ── Toast ──
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('visible');
+            setTimeout(() => t.classList.remove('visible'), 3500);
+        }
+
+        // ── Init ──
+        captureArea.onclick = startCamera;
+    </script>
+</body>
+</html>
