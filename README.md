@@ -4,7 +4,7 @@ A robust, full-stack machine learning pipeline that goes beyond standard classif
 
 ## 🌟 Key Features
 
-1. **Dual-Model Edge Architecture**: Uses both **MobileNetV3-Small** (2.5M parameters) and **EfficientNet-Lite0**, enabling extremely fast, real-time inference strictly on a CPU without requiring cloud GPUs. You can run this natively on a Raspberry Pi or standard laptop.
+1. **Dual-Model Edge Architecture**: Uses both **MobileNetV3-Small** (~1.5M parameters) and **EfficientNet-Lite0** (~4.7M parameters), enabling extremely fast, real-time inference strictly on a CPU without requiring cloud GPUs. You can run this natively on a Raspberry Pi or standard laptop.
 2. **True Explainable AI (XAI)**: Unlike traditional implementations that just display a Grad-CAM heatmap, PlantXAI features an **Intelligent Explanation Engine**. It mathematically analyzes the heatmap's spatial focus, spread, and intensity, cross-referencing it with botanical rules to generate a human-readable explanation of *why* it made its diagnosis.
 3. **Mobile-First Full-Stack App**: Comes with a built-in Flask server featuring a stunning dark "glassmorphism" user interface.
     - Three Input Modes: **Live Camera**, **Take Photo**, and **File Upload**.
@@ -37,7 +37,7 @@ python server.py
 If you wish to retrain the underlying model or test the Python scripts independently of the web app, simply upload the `train.py` and `test.py` files to Google Colab. The codebase is fully modular.
 
 ### `train.py`
-Downloads the massive PlantVillage dataset (54,000+ images) via KaggleHub, handles bounding/normalization, executes the training loop, evaluates metrics (Accuracy, Precision, Recall, F1), generates a Seaborn Confusion Matrix, and saves the trained `.pth` weights files.
+Downloads the 15-class PlantVillage subset (20,638 images, covering Pepper, Potato, and Tomato diseases) via KaggleHub, applies architecture-specific preprocessing, executes the training loop across multiple train-test splits (80:20, 75:25, 70:30, 65:35, 60:40), evaluates metrics (Accuracy, Precision, Recall, F1, Macro-F1, AUROC), generates confusion matrices and per-class reports, and saves the trained `.pth` weights files along with a comprehensive `results/` folder.
 
 ### `test.py`
 A lightweight testing script intended to be used in Colab alongside `train.py`. It explicitly loads the saved model weights and outputs the custom intelligent Grad-CAM explanations directly in the console.

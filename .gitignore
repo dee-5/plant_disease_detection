@@ -28,8 +28,10 @@ PlantVillage/
 .cache/
 
 # Execution outputs
+results/
 confusion_matrix.png
 class_names.json
+ensemble_config.json
 
 # Local App Data & Tests
 *.db

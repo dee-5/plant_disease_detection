@@ -5,6 +5,7 @@ import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -23,12 +24,30 @@ except FileNotFoundError:
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Same standard normalization used in training
-transform = transforms.Compose([
+# ──────────────────────────────────────────────────────────────────────────────
+# Issue #3 fix: Per-architecture preprocessing
+# ──────────────────────────────────────────────────────────────────────────────
+# MobileNetV3-Small uses standard ImageNet normalization.
+# EfficientNet-Lite0 (via timm tf_efficientnet_lite0) uses mean=0.5, std=0.5.
+IMAGENET_MEAN, IMAGENET_STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+EFFNET_MEAN, EFFNET_STD = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+
+mobilenet_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
 ])
+
+efficientnet_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=EFFNET_MEAN, std=EFFNET_STD),
+])
+
+TRANSFORMS = {
+    'mobilenet': mobilenet_transform,
+    'efficientnet': efficientnet_transform,
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -166,7 +185,9 @@ def test_image(image_path, model_name='mobilenet'):
         print(f"Error loading image: {e}")
         return
 
-    input_tensor = transform(img).unsqueeze(0).to(device)
+    # Issue #3 fix: use the correct transform for this architecture
+    tf = TRANSFORMS[model_name]
+    input_tensor = tf(img).unsqueeze(0).to(device)
 
     # Ensemble Predict
     avg_probabilities, predicted_idx, confidence = ensemble_predict(input_tensor, models_list)
@@ -223,7 +244,13 @@ def test_image(image_path, model_name='mobilenet'):
 
 
 def compare_models(image_path):
-    """Run both model ensembles on the same image and display side-by-side comparison."""
+    """Run both model ensembles on the same image and display side-by-side comparison.
+    
+    Also computes and prints the dual-model consensus verdict:
+      - HIGH: Both architectures agree AND both have >80% confidence
+      - MEDIUM: Both architectures agree but lower confidence
+      - LOW: The two architectures disagree
+    """
     print(f"\n{'='*60}")
     print(f"  COMPARING BOTH ENSEMBLES ON: {image_path}")
     print(f"{'='*60}")
@@ -234,13 +261,14 @@ def compare_models(image_path):
         print(f"Error loading image: {e}")
         return
 
-    input_tensor = transform(img).unsqueeze(0).to(device)
     rgb_img = np.array(img.resize((224, 224))) / 255.0
 
     models_config = [
         ("MobileNetV3-Small", "mobilenet"),
         ("EfficientNet-Lite0", "efficientnet"),
     ]
+
+    predictions = {}  # store per-architecture results for consensus
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     axes[0].imshow(rgb_img)
@@ -253,9 +281,19 @@ def compare_models(image_path):
             print(f"ERROR: Weights not found for {display_name}. Run train.py first!")
             continue
 
+        # Issue #3 fix: use the correct transform for this architecture
+        tf = TRANSFORMS[model_type]
+        input_tensor = tf(img).unsqueeze(0).to(device)
+
         # Ensemble prediction
         avg_probabilities, predicted_idx, confidence = ensemble_predict(input_tensor, models_list)
         predicted_class = class_names[predicted_idx.item()]
+
+        predictions[model_type] = {
+            'class': predicted_class,
+            'idx': predicted_idx.item(),
+            'confidence': confidence.item(),
+        }
 
         # Grad-CAM (use first model in ensemble)
         best_model = models_list[0][0]
@@ -271,9 +309,131 @@ def compare_models(image_path):
 
         print(f"\n  {display_name} Ensemble ({len(models_list)} splits): {predicted_class} ({confidence.item()*100:.2f}%)")
 
+    # ── Issue #2: Dual-model consensus verdict ────────────────────────────
+    if 'mobilenet' in predictions and 'efficientnet' in predictions:
+        mob = predictions['mobilenet']
+        eff = predictions['efficientnet']
+        agree = mob['class'] == eff['class']
+        both_confident = mob['confidence'] > 0.8 and eff['confidence'] > 0.8
+
+        if agree and both_confident:
+            verdict = "HIGH"
+            color = "🟢"
+            explanation = "Both architectures agree with high confidence (>80%)."
+        elif agree:
+            verdict = "MEDIUM"
+            color = "🟡"
+            explanation = "Both architectures agree, but at least one has lower confidence."
+        else:
+            verdict = "LOW"
+            color = "🔴"
+            explanation = f"Architectures DISAGREE: MobileNet→{mob['class']}, EfficientNet→{eff['class']}."
+
+        print(f"\n  {color} CONSENSUS VERDICT: {verdict}")
+        print(f"     {explanation}")
+        print(f"     MobileNet: {mob['class']} ({mob['confidence']*100:.1f}%)")
+        print(f"     EfficientNet: {eff['class']} ({eff['confidence']*100:.1f}%)")
+
     plt.suptitle("Ensemble Model Comparison — Grad-CAM Heatmaps", fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.show()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. Batch Consensus Evaluation (from saved predictions)
+# ──────────────────────────────────────────────────────────────────────────────
+def evaluate_consensus(results_dir="results"):
+    """Compute dual-model consensus (High/Medium/Low) from saved prediction files.
+    
+    This loads the .npz files saved by train.py and computes consensus statistics
+    for each split ratio. Prints a summary table and saves to CSV.
+    
+    High: both architectures agree AND both >80% confident
+    Medium: both agree, lower confidence
+    Low: they disagree
+    """
+    from sklearn.metrics import accuracy_score
+
+    print(f"\n{'='*70}")
+    print(f"  DUAL-MODEL CONSENSUS EVALUATION")
+    print(f"{'='*70}")
+
+    consensus_rows = []
+
+    # Try to load ensemble config for split ratios, else scan results dir
+    ratios = []
+    if ensemble_config:
+        ratios = ensemble_config['split_ratios']
+    else:
+        import re
+        for f in os.listdir(results_dir):
+            m = re.match(r'preds_mobilenet_v3_(\d+)\.npz', f)
+            if m:
+                ratios.append(int(m.group(1)))
+        ratios.sort(reverse=True)
+
+    if not ratios:
+        print("  No prediction files found. Run train.py first!")
+        return
+
+    for split_pct in ratios:
+        mob_path = os.path.join(results_dir, f"preds_mobilenet_v3_{split_pct}.npz")
+        eff_path = os.path.join(results_dir, f"preds_efficientnet_lite_{split_pct}.npz")
+
+        if not (os.path.exists(mob_path) and os.path.exists(eff_path)):
+            print(f"  [SKIP] Missing predictions for split {split_pct}")
+            continue
+
+        mob = np.load(mob_path)
+        eff = np.load(eff_path)
+
+        # Verify same test set
+        if not np.array_equal(mob['labels'], eff['labels']):
+            print(f"  [ERROR] Label mismatch for split {split_pct}!")
+            continue
+
+        mob_preds, eff_preds = mob['preds'], eff['preds']
+        mob_probs, eff_probs = mob['probs'], eff['probs']
+        mob_conf = mob_probs.max(axis=1)
+        eff_conf = eff_probs.max(axis=1)
+        labels = mob['labels']
+
+        n_total = len(labels)
+        agree = mob_preds == eff_preds
+        high = agree & (mob_conf > 0.8) & (eff_conf > 0.8)
+        medium = agree & ~high
+        low = ~agree
+
+        # Accuracy within each tier (using MobileNet prediction where they agree,
+        # since by definition both predict the same class in High/Medium tiers)
+        high_acc = accuracy_score(labels[high], mob_preds[high]) * 100 if high.sum() > 0 else float('nan')
+        med_acc = accuracy_score(labels[medium], mob_preds[medium]) * 100 if medium.sum() > 0 else float('nan')
+        low_n = int(low.sum())
+
+        row = dict(
+            split=f"{split_pct}:{100 - split_pct}",
+            total=n_total,
+            high_n=int(high.sum()), high_pct=round(high.sum() / n_total * 100, 1),
+            high_accuracy=round(high_acc, 2),
+            medium_n=int(medium.sum()), medium_pct=round(medium.sum() / n_total * 100, 1),
+            medium_accuracy=round(med_acc, 2),
+            low_n=low_n, low_pct=round(low_n / n_total * 100, 1),
+        )
+        consensus_rows.append(row)
+
+        print(f"\n  Split {row['split']} ({n_total} test samples):")
+        print(f"    🟢 HIGH   : {row['high_n']:>5} ({row['high_pct']:>5.1f}%) — accuracy {row['high_accuracy']:.1f}%")
+        print(f"    🟡 MEDIUM : {row['medium_n']:>5} ({row['medium_pct']:>5.1f}%) — accuracy {row['medium_accuracy']:.1f}%")
+        print(f"    🔴 LOW    : {row['low_n']:>5} ({row['low_pct']:>5.1f}%)")
+
+    if consensus_rows:
+        df = pd.DataFrame(consensus_rows)
+        out_path = os.path.join(results_dir, "consensus_summary.csv")
+        df.to_csv(out_path, index=False)
+        print(f"\n  Consensus table saved → {out_path}")
+        print(f"\n{df.to_string(index=False)}")
+
+    return consensus_rows
 
 
 # =======================================================
@@ -288,3 +448,6 @@ your_image_path = "YOUR_IMAGE_PATH_HERE.JPG"
 
 # Remove the hashtag from the line below to compare both model ensembles:
 # compare_models(your_image_path)
+
+# Remove the hashtag below to compute consensus statistics from saved predictions:
+# evaluate_consensus()

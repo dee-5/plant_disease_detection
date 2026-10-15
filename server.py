@@ -139,10 +139,22 @@ if not mobilenet_ensemble and not efficientnet_ensemble:
 print(f"[MODEL] MobileNetV3 ensemble: {len(mobilenet_ensemble)} model(s)")
 print(f"[MODEL] EfficientNet ensemble: {len(efficientnet_ensemble)} model(s)")
 
-transform = transforms.Compose([
+# Issue #3 fix: Per-architecture preprocessing
+# MobileNetV3-Small uses standard ImageNet normalization.
+# EfficientNet-Lite0 (via timm tf_efficientnet_lite0) uses mean=0.5, std=0.5.
+IMAGENET_MEAN, IMAGENET_STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+EFFNET_MEAN, EFFNET_STD = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+
+mobilenet_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+])
+
+efficientnet_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=EFFNET_MEAN, std=EFFNET_STD),
 ])
 
 
@@ -158,6 +170,7 @@ if mobilenet_ensemble:
         # GradCAM target layers from the first model in the ensemble
         'target_layers': [mobilenet_ensemble[0].features[-1]],
         'gradcam_model': mobilenet_ensemble[0],
+        'transform': mobilenet_transform,
     }
 if efficientnet_ensemble:
     MODELS['efficientnet'] = {
@@ -165,6 +178,7 @@ if efficientnet_ensemble:
         'display_name': f'EfficientNet-Lite0 (Ensemble ×{len(efficientnet_ensemble)})',
         'target_layers': [efficientnet_ensemble[0].conv_head],
         'gradcam_model': efficientnet_ensemble[0],
+        'transform': efficientnet_transform,
     }
 
 
@@ -208,9 +222,10 @@ def run_prediction(pil_image, model_key='mobilenet'):
     display_name = model_info['display_name']
     target_layers = model_info['target_layers']
     gradcam_model = model_info['gradcam_model']
+    model_transform = model_info['transform']
 
     img = pil_image.convert('RGB')
-    input_tensor = transform(img).unsqueeze(0).to(device)
+    input_tensor = model_transform(img).unsqueeze(0).to(device)
 
     # Ensemble Forward Pass
     avg_probabilities, predicted_idx, confidence = ensemble_predict(input_tensor, models_list)
