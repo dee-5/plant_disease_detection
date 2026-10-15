@@ -1,8 +1,10 @@
 """
-PlantXAI — Flask Server
+PlantXAI — Flask Server (Ensemble Edition)
 A lightweight, mobile-friendly plant disease detection server with:
 - Live camera capture, photo capture, and image upload
-- Dual-model inference: MobileNetV3-Small AND EfficientNet-Lite0
+- Multi-split ensemble inference: averages predictions from models trained on
+  different train-test splits (80:20, 75:25, 70:30, 65:35, 60:40) for both
+  MobileNetV3-Small AND EfficientNet-Lite0
 - GradCAM heatmap generation for both architectures
 - Intelligent per-image GradCAM explanations
 - Side-by-side model comparison mode
@@ -47,9 +49,9 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Model Loading
+# Model Loading — Ensemble Support
 # ──────────────────────────────────────────────────────────────────────────────
-print("\n[MODEL] Loading PlantXAI models...")
+print("\n[MODEL] Loading PlantXAI models (Ensemble Mode)...")
 
 try:
     with open(os.path.join(BASE_DIR, 'class_names.json'), 'r') as f:
@@ -60,40 +62,82 @@ except FileNotFoundError:
 
 device = torch.device("cpu")  # Edge-optimized: CPU only
 
-# --- Model 1: MobileNetV3-Small ---
-mobilenet_model = None
+# Load ensemble configuration
+ensemble_config = None
 try:
-    mobilenet_model = models.mobilenet_v3_small(weights=None)
-    in_features = mobilenet_model.classifier[3].in_features
-    mobilenet_model.classifier[3] = nn.Linear(in_features, len(class_names))
-    mobilenet_model.load_state_dict(torch.load(
-        os.path.join(BASE_DIR, "mobilenet_v3.pth"), map_location=device
-    ))
-    mobilenet_model = mobilenet_model.eval().to(device)
-    print(f"[MODEL] MobileNetV3-Small loaded — {len(class_names)} classes on {device}")
+    with open(os.path.join(BASE_DIR, 'ensemble_config.json'), 'r') as f:
+        ensemble_config = json.load(f)
+    print(f"[ENSEMBLE] Config loaded — Splits: {ensemble_config['split_ratios']}")
 except FileNotFoundError:
-    print("[MODEL] WARNING: mobilenet_v3.pth not found. MobileNetV3 will be unavailable.")
-    mobilenet_model = None
+    print("[INFO] ensemble_config.json not found. Falling back to single-model mode.")
 
-# --- Model 2: EfficientNet-Lite0 ---
-efficientnet_model = None
-try:
-    efficientnet_model = timm.create_model(
-        'tf_efficientnet_lite0', pretrained=False, num_classes=len(class_names)
-    )
-    efficientnet_model.load_state_dict(torch.load(
-        os.path.join(BASE_DIR, "efficientnet_lite.pth"), map_location=device
-    ))
-    efficientnet_model = efficientnet_model.eval().to(device)
-    print(f"[MODEL] EfficientNet-Lite0 loaded — {len(class_names)} classes on {device}")
-except FileNotFoundError:
-    print("[MODEL] WARNING: efficientnet_lite.pth not found. EfficientNet-Lite will be unavailable.")
-    efficientnet_model = None
 
-# Check at least one model is available
-if mobilenet_model is None and efficientnet_model is None:
+def _build_mobilenet():
+    """Build MobileNetV3-Small architecture (no weights)."""
+    model = models.mobilenet_v3_small(weights=None)
+    in_features = model.classifier[3].in_features
+    model.classifier[3] = nn.Linear(in_features, len(class_names))
+    return model
+
+
+def _build_efficientnet():
+    """Build EfficientNet-Lite0 architecture (no weights)."""
+    return timm.create_model('tf_efficientnet_lite0', pretrained=False, num_classes=len(class_names))
+
+
+def load_model_weights(weight_path, model_type):
+    """Load a single model from a weight file."""
+    if model_type == 'mobilenet':
+        model = _build_mobilenet()
+    else:
+        model = _build_efficientnet()
+
+    model.load_state_dict(torch.load(weight_path, map_location=device))
+    model = model.eval().to(device)
+    return model
+
+
+def load_ensemble_models(model_type):
+    """Load all split-trained models for the given architecture.
+    Returns list of loaded model objects.
+    Falls back to legacy single weight file if no ensemble config.
+    """
+    loaded = []
+
+    if ensemble_config:
+        config = ensemble_config['models'].get(model_type)
+        if config:
+            for weight_file in config['weight_files']:
+                full_path = os.path.join(BASE_DIR, weight_file)
+                if os.path.exists(full_path):
+                    model = load_model_weights(full_path, model_type)
+                    loaded.append(model)
+                    print(f"  [ENSEMBLE] Loaded {weight_file}")
+                else:
+                    print(f"  [WARNING] Weight file not found: {weight_file}")
+
+    # Fallback: use legacy single weight file
+    if not loaded:
+        legacy = "mobilenet_v3.pth" if model_type == 'mobilenet' else "efficientnet_lite.pth"
+        legacy_path = os.path.join(BASE_DIR, legacy)
+        if os.path.exists(legacy_path):
+            model = load_model_weights(legacy_path, model_type)
+            loaded.append(model)
+            print(f"  [FALLBACK] Loaded single model: {legacy}")
+
+    return loaded
+
+
+# Load all ensembles at startup
+mobilenet_ensemble = load_ensemble_models('mobilenet')
+efficientnet_ensemble = load_ensemble_models('efficientnet')
+
+if not mobilenet_ensemble and not efficientnet_ensemble:
     print("ERROR: No model weights found! Run train.py first.")
     exit()
+
+print(f"[MODEL] MobileNetV3 ensemble: {len(mobilenet_ensemble)} model(s)")
+print(f"[MODEL] EfficientNet ensemble: {len(efficientnet_ensemble)} model(s)")
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -103,21 +147,24 @@ transform = transforms.Compose([
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Model Registry
+# Model Registry (Ensemble-aware)
 # ──────────────────────────────────────────────────────────────────────────────
 
 MODELS = {}
-if mobilenet_model:
+if mobilenet_ensemble:
     MODELS['mobilenet'] = {
-        'model': mobilenet_model,
-        'display_name': 'MobileNetV3-Small',
-        'target_layers': [mobilenet_model.features[-1]],
+        'ensemble': mobilenet_ensemble,
+        'display_name': f'MobileNetV3-Small (Ensemble ×{len(mobilenet_ensemble)})',
+        # GradCAM target layers from the first model in the ensemble
+        'target_layers': [mobilenet_ensemble[0].features[-1]],
+        'gradcam_model': mobilenet_ensemble[0],
     }
-if efficientnet_model:
+if efficientnet_ensemble:
     MODELS['efficientnet'] = {
-        'model': efficientnet_model,
-        'display_name': 'EfficientNet-Lite0',
-        'target_layers': [efficientnet_model.conv_head],
+        'ensemble': efficientnet_ensemble,
+        'display_name': f'EfficientNet-Lite0 (Ensemble ×{len(efficientnet_ensemble)})',
+        'target_layers': [efficientnet_ensemble[0].conv_head],
+        'gradcam_model': efficientnet_ensemble[0],
     }
 
 
@@ -127,12 +174,29 @@ def get_available_models():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Prediction Engine
+# Ensemble Prediction Engine
 # ──────────────────────────────────────────────────────────────────────────────
+
+def ensemble_predict(input_tensor, models_list):
+    """Average softmax probabilities across all models in the ensemble."""
+    all_probs = []
+
+    with torch.no_grad():
+        for model in models_list:
+            output = model(input_tensor)
+            probs = torch.nn.functional.softmax(output[0], dim=0)
+            all_probs.append(probs)
+
+    stacked = torch.stack(all_probs, dim=0)
+    avg_probabilities = torch.mean(stacked, dim=0)
+
+    confidence, predicted_idx = torch.max(avg_probabilities, 0)
+    return avg_probabilities, predicted_idx, confidence
+
 
 def run_prediction(pil_image, model_key='mobilenet'):
     """
-    Run full prediction pipeline: inference + GradCAM + explanation.
+    Run full ensemble prediction pipeline: inference + GradCAM + explanation.
     Returns dict with all results.
     """
     if model_key not in MODELS:
@@ -140,31 +204,29 @@ def run_prediction(pil_image, model_key='mobilenet'):
         model_key = get_available_models()[0]
 
     model_info = MODELS[model_key]
-    model = model_info['model']
+    models_list = model_info['ensemble']
     display_name = model_info['display_name']
     target_layers = model_info['target_layers']
+    gradcam_model = model_info['gradcam_model']
 
     img = pil_image.convert('RGB')
     input_tensor = transform(img).unsqueeze(0).to(device)
 
-    # Forward Pass
-    with torch.no_grad():
-        output = model(input_tensor)
-        probabilities = torch.nn.functional.softmax(output[0], dim=0)
-        confidence, predicted_idx = torch.max(probabilities, 0)
+    # Ensemble Forward Pass
+    avg_probabilities, predicted_idx, confidence = ensemble_predict(input_tensor, models_list)
 
     predicted_class = class_names[predicted_idx.item()]
     conf_value = float(confidence.item())
 
     # Top 3
-    top_prob, top_indices = torch.topk(probabilities, min(3, len(class_names)))
+    top_prob, top_indices = torch.topk(avg_probabilities, min(3, len(class_names)))
     top3 = [
         {"class": class_names[idx.item()], "confidence": round(float(prob.item()) * 100, 1)}
         for prob, idx in zip(top_prob, top_indices)
     ]
 
-    # GradCAM
-    cam = GradCAM(model=model, target_layers=target_layers)
+    # GradCAM (use the first model in the ensemble for visualization)
+    cam = GradCAM(model=gradcam_model, target_layers=target_layers)
     targets = [ClassifierOutputTarget(predicted_idx.item())]
     grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0, :]
 
@@ -213,6 +275,7 @@ def run_prediction(pil_image, model_key='mobilenet'):
         "top3": top3,
         "is_healthy": explanation['is_healthy'],
         "severity": explanation['severity'],
+        "ensemble_size": len(models_list),
         "image_url": f"/static/uploads/{img_filename}",
         "gradcam_url": f"/static/gradcam/{cam_filename}",
         "explanation": {
@@ -272,19 +335,20 @@ def history():
 
 @app.route('/api/models')
 def api_models():
-    """Return list of available models."""
+    """Return list of available models with ensemble info."""
     models_list = []
     for key, info in MODELS.items():
         models_list.append({
             "key": key,
             "display_name": info['display_name'],
+            "ensemble_size": len(info['ensemble']),
         })
     return jsonify({"models": models_list})
 
 
 @app.route('/api/predict', methods=['POST'])
 def api_predict():
-    """Accept image via file upload or base64 and return prediction."""
+    """Accept image via file upload or base64 and return ensemble prediction."""
     try:
         pil_image = _extract_image_from_request()
 
@@ -309,7 +373,7 @@ def api_predict():
 
 @app.route('/api/compare', methods=['POST'])
 def api_compare():
-    """Run both models on the same image and return side-by-side results."""
+    """Run both model ensembles on the same image and return side-by-side results."""
     try:
         pil_image = _extract_image_from_request()
 
@@ -395,16 +459,18 @@ if __name__ == '__main__':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-    port = 5000
+    port = int(os.environ.get('PORT', 5001))
     local_ip = get_local_ip()
     url = f"http://{local_ip}:{port}"
 
     loaded_models = ", ".join([MODELS[k]['display_name'] for k in MODELS])
+    total_models = sum(len(MODELS[k]['ensemble']) for k in MODELS)
 
     print("\n" + "=" * 60)
-    print("  PlantXAI -- Plant Disease Detection Server")
+    print("  PlantXAI -- Plant Disease Detection Server (Ensemble)")
     print("=" * 60)
     print(f"\n  Models:  {loaded_models}")
+    print(f"  Total ensemble models loaded: {total_models}")
     print(f"  Local:   http://localhost:{port}")
     print(f"  Network: {url}")
     print(f"\n  Open the Network URL on your phone")

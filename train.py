@@ -12,7 +12,17 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import timm
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Dataset Loading (shared across both models)
+# Configuration: Multiple Train-Test Split Ratios for Ensemble Training
+# ──────────────────────────────────────────────────────────────────────────────
+# Each model is trained on every split ratio below. The saved weights from all
+# splits are later loaded together during inference and their softmax outputs
+# are averaged (probability-level ensemble) for a more robust prediction.
+# ──────────────────────────────────────────────────────────────────────────────
+
+SPLIT_RATIOS = [0.80, 0.75, 0.70, 0.65, 0.60]  # train fractions
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataset Loading (shared across all splits & models)
 # ──────────────────────────────────────────────────────────────────────────────
 print("Step 1: Downloading & Loading Dataset...")
 path = kagglehub.dataset_download("arjuntejaswi/plant-village")
@@ -36,19 +46,14 @@ num_classes = len(class_names)
 with open('class_names.json', 'w') as f:
     json.dump(class_names, f)
 
-train_size = int(0.8 * len(full_dataset))
-val_size = len(full_dataset) - train_size
-train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
+print(f"  Dataset loaded: {len(full_dataset)} images, {num_classes} classes")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-num_epochs = 1  # Set to 10 or 20 for real results!
+num_epochs = 10  # Balanced: good convergence + efficient on light hardware
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Reusable Training & Evaluation Functions
+# Reusable Model Builders
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_mobilenet_v3(num_classes):
@@ -64,6 +69,10 @@ def build_efficientnet_lite(num_classes):
     model = timm.create_model('tf_efficientnet_lite0', pretrained=True, num_classes=num_classes)
     return model
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reusable Training & Evaluation Functions
+# ──────────────────────────────────────────────────────────────────────────────
 
 def train_model(model, model_name, train_loader, device, criterion, num_epochs):
     """Train a model and return it."""
@@ -142,54 +151,158 @@ def plot_confusion_matrix(all_labels, all_preds, class_names, model_name):
     plt.xlabel('Predicted Disease')
     plt.xticks(rotation=90)
     plt.tight_layout()
-    plt.savefig(f"confusion_matrix_{model_name.lower().replace(' ', '_').replace('-', '_')}.png", dpi=150)
-    print(f"  Confusion matrix saved to confusion_matrix_{model_name.lower().replace(' ', '_').replace('-', '_')}.png")
+    fname = f"confusion_matrix_{model_name.lower().replace(' ', '_').replace('-', '_').replace(':', '_')}.png"
+    plt.savefig(fname, dpi=150)
+    plt.close()
+    print(f"  Confusion matrix saved to {fname}")
+
+
+def get_weight_filename(model_base_name, split_ratio):
+    """Generate a consistent weight filename for a given model and split ratio.
+    
+    Examples:
+        mobilenet_v3_split80.pth
+        efficientnet_lite_split70.pth
+    """
+    split_pct = int(split_ratio * 100)
+    return f"{model_base_name}_split{split_pct}.pth"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Train Both Models
+# Multi-Split Ensemble Training Loop
 # ──────────────────────────────────────────────────────────────────────────────
 criterion = nn.CrossEntropyLoss()
-results = {}
 
-# --- Model 1: MobileNetV3-Small ---
-print("\n\nStep 2a: Training MobileNetV3-Small...")
-mobilenet = build_mobilenet_v3(num_classes)
-mobilenet = train_model(mobilenet, "MobileNetV3-Small", train_loader, device, criterion, num_epochs)
+# Stores per-split, per-model metrics for the final summary
+all_results = {}  # key: "ModelName (XX:YY)" -> metrics dict
 
-print("\nStep 3a: Evaluating MobileNetV3-Small...")
-results['MobileNetV3-Small'] = evaluate_model(mobilenet, "MobileNetV3-Small", val_loader, device)
-plot_confusion_matrix(results['MobileNetV3-Small']['all_preds'], results['MobileNetV3-Small']['all_labels'], class_names, "MobileNetV3-Small")
+# Track saved weight files for ensemble config
+ensemble_config = {
+    "split_ratios": [int(r * 100) for r in SPLIT_RATIOS],
+    "models": {
+        "mobilenet": {
+            "display_name": "MobileNetV3-Small",
+            "weight_files": [],
+        },
+        "efficientnet": {
+            "display_name": "EfficientNet-Lite0",
+            "weight_files": [],
+        }
+    }
+}
 
-torch.save(mobilenet.state_dict(), "mobilenet_v3.pth")
-print("  Model saved to 'mobilenet_v3.pth'")
+for split_idx, train_ratio in enumerate(SPLIT_RATIOS):
+    val_ratio = 1.0 - train_ratio
+    split_label = f"{int(train_ratio*100)}:{int(val_ratio*100)}"
+    
+    print(f"\n\n{'#'*60}")
+    print(f"  SPLIT {split_idx+1}/{len(SPLIT_RATIOS)} — Train:Val = {split_label}")
+    print(f"{'#'*60}")
 
-# --- Model 2: EfficientNet-Lite0 ---
-print("\n\nStep 2b: Training EfficientNet-Lite0...")
-efficientnet = build_efficientnet_lite(num_classes)
-efficientnet = train_model(efficientnet, "EfficientNet-Lite0", train_loader, device, criterion, num_epochs)
+    # Create the split
+    train_size = int(train_ratio * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
-print("\nStep 3b: Evaluating EfficientNet-Lite0...")
-results['EfficientNet-Lite0'] = evaluate_model(efficientnet, "EfficientNet-Lite0", val_loader, device)
-plot_confusion_matrix(results['EfficientNet-Lite0']['all_preds'], results['EfficientNet-Lite0']['all_labels'], class_names, "EfficientNet-Lite0")
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
-torch.save(efficientnet.state_dict(), "efficientnet_lite.pth")
-print("  Model saved to 'efficientnet_lite.pth'")
+    print(f"  Train samples: {train_size} | Val samples: {val_size}")
+
+    # ── Model 1: MobileNetV3-Small ──
+    model_label = f"MobileNetV3-Small ({split_label})"
+    print(f"\n  Training {model_label}...")
+    mobilenet = build_mobilenet_v3(num_classes)
+    mobilenet = train_model(mobilenet, model_label, train_loader, device, criterion, num_epochs)
+
+    print(f"\n  Evaluating {model_label}...")
+    metrics = evaluate_model(mobilenet, model_label, val_loader, device)
+    all_results[model_label] = metrics
+    plot_confusion_matrix(metrics['all_preds'], metrics['all_labels'], class_names, model_label)
+
+    weight_file = get_weight_filename("mobilenet_v3", train_ratio)
+    torch.save(mobilenet.state_dict(), weight_file)
+    ensemble_config["models"]["mobilenet"]["weight_files"].append(weight_file)
+    print(f"  Saved weights → {weight_file}")
+
+    # ── Model 2: EfficientNet-Lite0 ──
+    model_label = f"EfficientNet-Lite0 ({split_label})"
+    print(f"\n  Training {model_label}...")
+    efficientnet = build_efficientnet_lite(num_classes)
+    efficientnet = train_model(efficientnet, model_label, train_loader, device, criterion, num_epochs)
+
+    print(f"\n  Evaluating {model_label}...")
+    metrics = evaluate_model(efficientnet, model_label, val_loader, device)
+    all_results[model_label] = metrics
+    plot_confusion_matrix(metrics['all_preds'], metrics['all_labels'], class_names, model_label)
+
+    weight_file = get_weight_filename("efficientnet_lite", train_ratio)
+    torch.save(efficientnet.state_dict(), weight_file)
+    ensemble_config["models"]["efficientnet"]["weight_files"].append(weight_file)
+    print(f"  Saved weights → {weight_file}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Comparison Summary
+# Save Ensemble Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-print("\n\n" + "="*60)
-print("  MODEL COMPARISON SUMMARY")
-print("="*60)
-print(f"  {'Metric':<15} {'MobileNetV3-Small':>20} {'EfficientNet-Lite0':>20}")
-print(f"  {'-'*55}")
-for metric_name in ['accuracy', 'precision', 'recall', 'f1']:
-    m_val = results['MobileNetV3-Small'][metric_name] * 100
-    e_val = results['EfficientNet-Lite0'][metric_name] * 100
-    m_arrow = " *" if m_val > e_val else ""
-    e_arrow = " *" if e_val > m_val else ""
-    print(f"  {metric_name.capitalize():<15} {m_val:>18.2f}%{m_arrow:>1} {e_val:>18.2f}%{e_arrow:>1}")
-print("="*60)
-print("\nTraining Phase Complete! Both models are ready.")
+# This JSON file tells test.py and server.py which weight files to load for
+# the probability-averaging ensemble.
+
+with open('ensemble_config.json', 'w') as f:
+    json.dump(ensemble_config, f, indent=2)
+print("\n  Ensemble config saved → ensemble_config.json")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Also save the "best split" weights as the original filenames for backward
+# compatibility with existing server.py / test.py (until they are updated).
+# The best split is the one with the highest F1 score for each model.
+# ──────────────────────────────────────────────────────────────────────────────
+
+for model_arch, base_name, legacy_name in [
+    ("MobileNetV3-Small", "mobilenet_v3", "mobilenet_v3.pth"),
+    ("EfficientNet-Lite0", "efficientnet_lite", "efficientnet_lite.pth"),
+]:
+    best_f1 = -1
+    best_split_file = None
+    for split_ratio in SPLIT_RATIOS:
+        split_label = f"{int(split_ratio*100)}:{int((1-split_ratio)*100)}"
+        key = f"{model_arch} ({split_label})"
+        if key in all_results and all_results[key]['f1'] > best_f1:
+            best_f1 = all_results[key]['f1']
+            best_split_file = get_weight_filename(base_name, split_ratio)
+
+    if best_split_file:
+        import shutil
+        shutil.copy2(best_split_file, legacy_name)
+        print(f"  Best {model_arch} weights ({best_split_file}) → copied to {legacy_name}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Grand Comparison Summary — All Splits × Both Models
+# ──────────────────────────────────────────────────────────────────────────────
+
+print("\n\n" + "=" * 90)
+print("  MULTI-SPLIT ENSEMBLE TRAINING — COMPLETE RESULTS")
+print("=" * 90)
+
+# Header
+header = f"  {'Split':<12} {'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10}"
+print(header)
+print(f"  {'-' * (len(header) - 2)}")
+
+for split_ratio in SPLIT_RATIOS:
+    split_label = f"{int(split_ratio*100)}:{int((1-split_ratio)*100)}"
+    for model_arch in ["MobileNetV3-Small", "EfficientNet-Lite0"]:
+        key = f"{model_arch} ({split_label})"
+        if key in all_results:
+            m = all_results[key]
+            print(f"  {split_label:<12} {model_arch:<22} {m['accuracy']*100:>9.2f}% {m['precision']*100:>9.2f}% {m['recall']*100:>9.2f}% {m['f1']*100:>9.2f}%")
+    print(f"  {'-' * (len(header) - 2)}")
+
+print("=" * 90)
+print(f"\n  Total models trained: {len(SPLIT_RATIOS) * 2} ({len(SPLIT_RATIOS)} splits × 2 architectures)")
+print(f"  Ensemble weight files saved for each architecture.")
+print(f"  At inference time, all {len(SPLIT_RATIOS)} split-models per architecture are loaded")
+print(f"  and their softmax probabilities are averaged for a stronger, ensemble prediction.")
+print("\n  Training Phase Complete! Ensemble is ready.\n")
